@@ -29,6 +29,8 @@ unchanged.
 | DELETE | `/items/{id}` | 204 |
 | GET | `/docs` | OpenAPI UI |
 
+`/healthz` (liveness) and `/readyz` (readiness) follow the Google/Kubernetes convention: the trailing "z" keeps operational endpoints from clashing with application routes.
+
 An item is `{id, name, description, created_at}`.
 
 ## Commands
