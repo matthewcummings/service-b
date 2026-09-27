@@ -114,6 +114,12 @@ jobs:
           BRANCH: ${{ github.ref_name }}
           SHA: ${{ github.sha }}
         run: |
+          # No dispatch token yet (make setup-github not run, or no token created): skip with a
+          # notice instead of failing. The image is published; deploy it by hand if needed.
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice::No INFRA_DISPATCH_TOKEN secret, so $INFRA_REPO was not signaled. Run 'make setup-github' in the infra repo, or deploy by hand: make preview BRANCH=$BRANCH"
+            exit 0
+          fi
           jq -n --arg service "$SERVICE_NAME" --arg branch "$BRANCH" --arg sha "$SHA" '{
             event_type: "service-changed",
             client_payload: {service: $service, branch: $branch, sha: $sha, event: "push"}
@@ -135,6 +141,12 @@ jobs:
           BRANCH: ${{ github.event.ref }}  # short name, e.g. preview/checkout/api
         # No sha: a deleted branch has no head commit (github.sha is the default branch's).
         run: |
+          # No dispatch token yet (make setup-github not run, or no token created): skip with a
+          # notice instead of failing. The image is published; deploy it by hand if needed.
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice::No INFRA_DISPATCH_TOKEN secret, so $INFRA_REPO was not signaled. Run 'make setup-github' in the infra repo, or deploy by hand: make preview BRANCH=$BRANCH"
+            exit 0
+          fi
           jq -n --arg service "$SERVICE_NAME" --arg branch "$BRANCH" '{
             event_type: "service-changed",
             client_payload: {service: $service, branch: $branch, sha: null, event: "delete"}
