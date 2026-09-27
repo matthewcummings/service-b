@@ -59,9 +59,11 @@ even while main is being written; the restore is a single transaction too (all o
 
 **Stale branches fail loudly.** If main merged a migration after your branch was created,
 the preview DB (copied from main) is at a revision your branch doesn't know, and `migrate`
-fails with: *"main's database is at migration <rev>, which this branch doesn't have. Merge
-or rebase main into your branch."* Previewing that combination would test something that
-can never reach production.
+fails with: *"this environment's database is at migration <rev>, which this code doesn't
+have. If main has moved on, merge or rebase main into your branch. If this preview's
+database got ahead of the branch (e.g. a rewritten migration), delete and re-push the
+branch to recreate it."* Previewing a stale combination would test something that can never
+reach production.
 
 Preview DB users default to `statement_timeout = 30s` (so one preview can't hog the shared
 cluster); `migrate` and `copy-db` turn it off for their own sessions.

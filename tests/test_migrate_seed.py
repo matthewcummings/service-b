@@ -28,8 +28,10 @@ def test_migrate_creates_schema_and_is_idempotent(db_settings):
 
 
 STALE_BRANCH_MESSAGE = (
-    "main's database is at migration f00dcafe1234, which this branch doesn't have. "
-    "Merge or rebase main into your branch."
+    "this environment's database is at migration f00dcafe1234, which this code "
+    "doesn't have. If main has moved on, merge or rebase main into your branch. "
+    "If this preview's database got ahead of the branch (e.g. a rewritten "
+    "migration), delete and re-push the branch to recreate it."
 )
 
 

@@ -39,8 +39,10 @@ def check_revision_is_known(conn: Connection, config: Config) -> None:
     for rev in MigrationContext.configure(conn).get_current_heads():
         if rev not in known:
             raise CommandFailed(
-                f"main's database is at migration {rev}, which this branch doesn't have. "
-                "Merge or rebase main into your branch."
+                f"this environment's database is at migration {rev}, which this code "
+                "doesn't have. If main has moved on, merge or rebase main into your branch. "
+                "If this preview's database got ahead of the branch (e.g. a rewritten "
+                "migration), delete and re-push the branch to recreate it."
             )
 
 
