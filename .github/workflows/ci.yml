@@ -1,0 +1,141 @@
+# Service CI (D11). This repo builds and tests; the infra repo's reconciler deploys.
+#   any push                 -> lint, tests, single Alembic head, Docker build
+#   push to main/preview/**  -> the above, then push an arm64 image to ECR and notify infra
+#   delete of preview/**     -> notify infra (it tears down or falls back to main)
+name: CI
+
+on:
+  push:
+    branches: ["**"]  # branches only; tags don't build
+  delete:
+
+permissions:
+  contents: read
+
+env:
+  # Repo name == service name == ECR repo name (services.yaml), so this file is identical
+  # in every service repo.
+  SERVICE_NAME: ${{ github.event.repository.name }}
+
+jobs:
+  check:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.2.0  # no floating major tag exists for this action
+        with:
+          version: "0.12.19"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Lint
+        run: |
+          uv run ruff check
+          uv run ruff format --check
+
+      # Two branches that each added a migration merge cleanly in git but leave Alembic
+      # with two heads; catch that here instead of at deploy time.
+      - name: Exactly one Alembic head
+        run: |
+          heads="$(uv run alembic heads)"
+          echo "$heads"
+          count="$(grep -c . <<< "$heads")"
+          if [ "$count" -ne 1 ]; then
+            echo "::error::Expected exactly one Alembic head, found $count. Merge the heads."
+            exit 1
+          fi
+
+      # Uses Docker (testcontainers Postgres 17, and the app image for the copy-db test).
+      - name: Tests
+        run: uv run pytest
+
+      - name: Docker build
+        env:
+          # Via env, never inlined into the script: branch names are attacker-controlled.
+          BRANCH: ${{ github.ref_name }}
+        run: >-
+          docker build
+          --build-arg GIT_SHA="$GITHUB_SHA"
+          --build-arg GIT_BRANCH="$BRANCH"
+          -t "$SERVICE_NAME:ci" .
+
+  publish:
+    needs: check
+    # Skipped until the repo is wired to AWS (AWS_ROLE_ARN set as a repo variable), so a fresh
+    # fork or clone runs lint + tests without failing on missing credentials.
+    if: >-
+      vars.AWS_ROLE_ARN != '' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/preview/'))
+    # Native arm64 runner: builds the Fargate (ARM64) image without emulation.
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      id-token: write  # OIDC: exchange the GitHub token for short-lived AWS credentials
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          # Full commit SHA: the reconciler looks images up by SHA, never by branch name.
+          # main builds also get main-<sha>, which the ECR lifecycle policy keeps (the newest 20)
+          # while preview images expire after 14 days.
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
+            ${{ github.ref == 'refs/heads/main' && format('{0}/{1}:main-{2}', steps.ecr.outputs.registry, env.SERVICE_NAME, github.sha) || '' }}
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+            GIT_BRANCH=${{ github.ref_name }}
+          # A plain image manifest (no attestation index), so tag -> digest is unambiguous.
+          provenance: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Notify infra repo
+        env:
+          GH_TOKEN: ${{ secrets.INFRA_DISPATCH_TOKEN }}
+          INFRA_REPO: ${{ vars.INFRA_REPO }}
+          BRANCH: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          jq -n --arg service "$SERVICE_NAME" --arg branch "$BRANCH" --arg sha "$SHA" '{
+            event_type: "service-changed",
+            client_payload: {service: $service, branch: $branch, sha: $sha, event: "push"}
+          }' | gh api "repos/$INFRA_REPO/dispatches" --input -
+
+  notify-branch-deleted:
+    # Same guard as publish: nothing to notify until the repo is wired to the infra repo.
+    if: >-
+      vars.INFRA_REPO != ''
+      && github.event_name == 'delete'
+      && github.event.ref_type == 'branch'
+      && startsWith(github.event.ref, 'preview/')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Notify infra repo
+        env:
+          GH_TOKEN: ${{ secrets.INFRA_DISPATCH_TOKEN }}
+          INFRA_REPO: ${{ vars.INFRA_REPO }}
+          BRANCH: ${{ github.event.ref }}  # short name, e.g. preview/checkout/api
+        # No sha: a deleted branch has no head commit (github.sha is the default branch's).
+        run: |
+          jq -n --arg service "$SERVICE_NAME" --arg branch "$BRANCH" '{
+            event_type: "service-changed",
+            client_payload: {service: $service, branch: $branch, sha: null, event: "delete"}
+          }' | gh api "repos/$INFRA_REPO/dispatches" --input -
